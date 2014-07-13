@@ -1,7 +1,7 @@
 /*
- Copyright (c) 2007-2008 TrueCrypt Developers Association. All rights reserved.
+ Copyright (c) 2007-2010 TrueCrypt Developers Association. All rights reserved.
 
- Governed by the TrueCrypt License 2.8 the full text of which is contained in
+ Governed by the TrueCrypt License 3.0 the full text of which is contained in
  the file License.txt included in TrueCrypt binary and source code distribution
  packages.
 */
@@ -32,12 +32,7 @@ HRESULT CreateElevatedComObject (HWND hwnd, REFGUID guid, REFIID iid, void **ppv
     bo.dwClassContext = CLSCTX_LOCAL_SERVER;
 
 	// Prevent the GUI from being half-rendered when the UAC prompt "freezes" it
-	MSG paintMsg;
-	int MsgCounter = 5000;	// Avoid endless processing of paint messages
-	while (PeekMessage (&paintMsg, hwnd, 0, 0, PM_REMOVE | PM_QS_PAINT) != 0 && --MsgCounter > 0)
-	{
-		DispatchMessage (&paintMsg);
-	}
+	ProcessPaintMessages (hwnd, 5000);
 
     return CoGetObject (monikerName, &bo, iid, ppv);
 }
@@ -151,12 +146,12 @@ DWORD BaseCom::ReadWriteFile (BOOL write, BOOL device, BSTR filePath, BSTR *buff
 }
 
 
-DWORD BaseCom::RegisterFilterDriver (BOOL registerDriver, BOOL volumeClass)
+DWORD BaseCom::RegisterFilterDriver (BOOL registerDriver, int filterType)
 {
 	try
 	{
 		BootEncryption bootEnc (NULL);
-		bootEnc.RegisterFilterDriver (registerDriver ? true : false, volumeClass ? true : false);
+		bootEnc.RegisterFilterDriver (registerDriver ? true : false, (BootEncryption::FilterType) filterType);
 	}
 	catch (SystemException &)
 	{

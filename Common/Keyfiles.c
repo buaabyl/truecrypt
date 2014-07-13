@@ -1,7 +1,7 @@
 /*
  Copyright (c) 2005-2009 TrueCrypt Developers Association. All rights reserved.
 
- Governed by the TrueCrypt License 2.8 the full text of which is contained in
+ Governed by the TrueCrypt License 3.0 the full text of which is contained in
  the file License.txt included in TrueCrypt binary and source code distribution
  packages.
 */
@@ -20,6 +20,7 @@
 #include "Language.h"
 #include "SecurityToken.h"
 #include "Common/resource.h"
+#include "Platform/Finally.h"
 #include "Platform/ForEach.h"
 
 using namespace TrueCrypt;
@@ -149,6 +150,12 @@ static BOOL KeyFileProcess (unsigned __int8 *keyPool, KeyFile *keyFile)
 			bTimeStampValid = TRUE;
 	}
 
+	finally_do_arg (HANDLE, src,
+	{
+		if (finally_arg != INVALID_HANDLE_VALUE)
+			CloseHandle (finally_arg);
+	});
+
 	f = fopen (keyFile->FileName, "rb");
 	if (f == NULL) return FALSE;
 
@@ -197,7 +204,6 @@ close:
 	{
 		// Restore the keyfile timestamp
 		SetFileTime (src, &ftCreationTime, &ftLastAccessTime, &ftLastWriteTime);
-		CloseHandle (src);
 	}
 
 	SetLastError (err);

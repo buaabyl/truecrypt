@@ -1,7 +1,7 @@
 /*
- Copyright (c) 2008-2009 TrueCrypt Developers Association. All rights reserved.
+ Copyright (c) 2008-2010 TrueCrypt Developers Association. All rights reserved.
 
- Governed by the TrueCrypt License 2.8 the full text of which is contained in
+ Governed by the TrueCrypt License 3.0 the full text of which is contained in
  the file License.txt included in TrueCrypt binary and source code distribution
  packages.
 */
@@ -13,17 +13,21 @@
 #include "Boot/Windows/BootCommon.h"
 #include "EncryptedIoQueue.h"
 
-typedef struct
+typedef struct _DriveFilterExtension
 {
 	BOOL bRootDevice;
 	BOOL IsVolumeDevice;
 	BOOL IsDriveFilterDevice;
 	BOOL IsVolumeFilterDevice;
+	uint64 MagicNumber;
 
 	PDEVICE_OBJECT DeviceObject;
 	PDEVICE_OBJECT LowerDeviceObject;
 	PDEVICE_OBJECT Pdo;
-	
+
+	ULONG SystemStorageDeviceNumber;
+	BOOL SystemStorageDeviceNumberValid;
+
 	int64 ConfiguredEncryptedAreaStart;
 	int64 ConfiguredEncryptedAreaEnd;
 
@@ -41,6 +45,8 @@ typedef struct
 
 } DriveFilterExtension;
 
+#define TC_BOOT_DRIVE_FILTER_EXTENSION_MAGIC_NUMBER 0x5452554542455854
+
 extern BOOL BootArgsValid;
 extern BootArguments BootArgs;
 extern PKTHREAD EncryptionSetupThread;
@@ -54,6 +60,7 @@ void GetBootEncryptionAlgorithmName (PIRP irp, PIO_STACK_LOCATION irpSp);
 void GetBootEncryptionStatus (PIRP irp, PIO_STACK_LOCATION irpSp);
 void GetBootLoaderVersion (PIRP irp, PIO_STACK_LOCATION irpSp);
 NTSTATUS GetSetupResult ();
+DriveFilterExtension *GetBootDriveFilterExtension ();
 CRYPTO_INFO *GetSystemDriveCryptoInfo ();
 BOOL IsBootDriveMounted ();
 BOOL IsBootEncryptionSetupInProgress ();
@@ -63,7 +70,7 @@ static NTSTATUS SaveDriveVolumeHeader (DriveFilterExtension *Extension);
 NTSTATUS StartBootEncryptionSetup (PDEVICE_OBJECT DeviceObject, PIRP irp, PIO_STACK_LOCATION irpSp);
 void ReopenBootVolumeHeader (PIRP irp, PIO_STACK_LOCATION irpSp);
 NTSTATUS StartDecoySystemWipe (PDEVICE_OBJECT DeviceObject, PIRP irp, PIO_STACK_LOCATION irpSp);
-void StartHibernationDriverFilter ();
+void StartLegacyHibernationDriverFilter ();
 NTSTATUS AbortDecoySystemWipe ();
 BOOL IsDecoySystemWipeInProgress();
 NTSTATUS GetDecoySystemWipeResult();

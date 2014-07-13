@@ -5,7 +5,7 @@
  Agreement for Encryption for the Masses'. Modifications and additions to
  the original source code (contained in this file) and all other portions
  of this file are Copyright (c) 2003-2009 TrueCrypt Developers Association
- and are governed by the TrueCrypt License 2.8 the full text of which is
+ and are governed by the TrueCrypt License 3.0 the full text of which is
  contained in the file License.txt included in TrueCrypt binary and source
  code distribution packages. */
 
@@ -48,6 +48,7 @@ BOOL CALLBACK PageDialogProc ( HWND hwndDlg , UINT uMsg , WPARAM wParam , LPARAM
 BOOL CALLBACK MainDialogProc ( HWND hwndDlg , UINT uMsg , WPARAM wParam , LPARAM lParam );
 void ExtractCommandLine ( HWND hwndDlg , char *lpszCommandLine );
 void DisplayRandPool (HWND hPoolDisplay, BOOL bShow);
+void DisplayPortionsOfKeys (HWND headerKeyHandle, HWND masterKeyHandle, char *headerKeyStr, char *masterKeyStr, BOOL hideKeys);
 int DetermineMaxHiddenVolSize (HWND hwndDlg);
 BOOL IsSparseFile (HWND hwndDlg);
 BOOL GetFileVolSize (HWND hwndDlg, unsigned __int64 *size);
@@ -74,6 +75,7 @@ static void WipeAbort (void);
 static void UpdateWipeProgressBar (void);
 static void InitWipeProgressBar (void);
 static void UpdateWipeControls (void);
+static int GetFormatSectorSize ();
 
 extern BOOL showKeys;
 extern volatile HWND hMasterKey;
@@ -89,7 +91,7 @@ extern volatile BOOL bInPlaceEncNonSysResumed;
 extern volatile BOOL bFirstNonSysInPlaceEncResumeDone;
 extern volatile BOOL bInPlaceEncNonSys;
 extern __int64 NonSysInplaceEncBytesDone;
-extern __int64 NonSysInplaceEncTotalSectors;
+extern __int64 NonSysInplaceEncTotalSize;
 extern int nPbar;
 extern volatile int WizardMode;
 
