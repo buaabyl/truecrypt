@@ -1,20 +1,23 @@
-/* The source code contained in this file has been derived from the source code
-   of Encryption for the Masses 2.02a by Paul Le Roux. Modifications and
-   additions to that source code contained in this file are Copyright (c) 2004-2005
-   TrueCrypt Foundation and Copyright (c) 2004 TrueCrypt Team. Unmodified
-   parts are Copyright (c) 1998-99 Paul Le Roux. This is a TrueCrypt Foundation
-   release. Please see the file license.txt for full license details. */
+/* Legal Notice: The source code contained in this file has been derived from
+   the source code of Encryption for the Masses 2.02a, which is Copyright (c)
+   1998-99 Paul Le Roux and which is covered by the 'License Agreement for
+   Encryption for the Masses'. Modifications and additions to that source code
+   contained in this file are Copyright (c) 2004-2005 TrueCrypt Foundation and
+   Copyright (c) 2004 TrueCrypt Team, and are covered by TrueCrypt License 2.0
+   the full text of which is contained in the file License.txt included in
+   TrueCrypt binary and source code distribution archives.  */
 
 #include "TCdefs.h"
-#include "crypto.h"
-#include "fat.h"
+#include "Crypto.h"
+#include "Fat.h"
+#include "Tests.h"
 
-#include "apidrvr.h"
-#include "ntdriver.h"
-#include "ntvol.h"
-#include "ntrawdv.h"
-#include "ntfiledv.h"
-#include "cache.h"
+#include "Apidrvr.h"
+#include "Ntdriver.h"
+#include "Ntvol.h"
+#include "Ntrawdv.h"
+#include "Ntfiledv.h"
+#include "Cache.h"
 
 #include <tchar.h>
 #include <initguid.h>
@@ -26,8 +29,9 @@
 #pragma alloc_text(INIT,DriverEntry)
 #pragma alloc_text(INIT,TCCreateRootDeviceObject)
 
-/* Sync mutex for the entire driver */
-KMUTEX driverMutex;
+KMUTEX driverMutex;			/* Sync mutex for the entire driver */
+BOOL SelfTestsPassed;
+int LastUniqueVolumeId;
 
 /* DriverEntry initialize's the dispatch addresses to be passed back to NT.
    RUNS AT IRQL = PASSIVE_LEVEL(0) */
@@ -48,6 +52,8 @@ DriverEntry (PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
 	DriverObject->DriverUnload = TCUnloadDriver;
 
 	KeInitializeMutex (&driverMutex, 1);
+
+	SelfTestsPassed = AutoTestAlgorithms ();
 
 	return TCCreateRootDeviceObject (DriverObject);
 }
@@ -130,7 +136,7 @@ TCDispatchQueueIRP (PDEVICE_OBJECT DeviceObject, PIRP Irp)
 #endif
 					return ntStatus;
 				}
-				else if (Extension->bShuttingDown == TRUE)
+				else if (Extension->bShuttingDown)
 				{
 					Irp->IoStatus.Status = STATUS_IO_DEVICE_ERROR;
 					Irp->IoStatus.Information = 0;
@@ -149,7 +155,7 @@ TCDispatchQueueIRP (PDEVICE_OBJECT DeviceObject, PIRP Irp)
 					return ntStatus;
 				}
 			}
-			else if (Extension->bShuttingDown == TRUE)
+			else if (Extension->bShuttingDown)
 			{
 				if (DeviceObject->Vpb && DeviceObject->Vpb->Flags & VPB_MOUNTED)
 				{
@@ -180,7 +186,7 @@ TCDispatchQueueIRP (PDEVICE_OBJECT DeviceObject, PIRP Irp)
 		}
 		else if ((DeviceObject->Flags & DO_VERIFY_VOLUME))
 		{		/* If shutting down or media removed */
-			if (Extension->bShuttingDown == TRUE)
+			if (Extension->bShuttingDown)
 			{
 				Irp->IoStatus.Status = STATUS_VERIFY_REQUIRED;
 				Irp->IoStatus.Information = 0;
@@ -230,7 +236,7 @@ TCDispatchQueueIRP (PDEVICE_OBJECT DeviceObject, PIRP Irp)
 		if (Extension->bRootDevice == FALSE)
 			KeReleaseMutex (&Extension->KernelMutex, FALSE);
 #endif
-		if (Extension->bRootDevice == TRUE)
+		if (Extension->bRootDevice)
 			UnmountAllDevices (DeviceObject, TRUE);
 
 		return COMPLETE_IRP (DeviceObject, Irp, STATUS_SUCCESS, 0);
@@ -524,8 +530,8 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 			tmp[0] = 'A' + Extension->nDosDriveNo;
 			strcat (volId, tmp);
 			
-			outputBuffer->UniqueIdLength = (USHORT) strlen(volId);
-			outLength = strlen(volId) + sizeof(USHORT);
+			outputBuffer->UniqueIdLength = (USHORT) strlen (volId);
+			outLength = strlen (volId) + sizeof(USHORT);
 
 			if (irpSp->Parameters.DeviceIoControl.OutputBufferLength < outLength)
 			{
@@ -534,7 +540,7 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 				break;
 			}
 
-			RtlCopyMemory ((PCHAR)outputBuffer->UniqueId, volId, strlen(volId));
+			RtlCopyMemory ((PCHAR)outputBuffer->UniqueId, volId, strlen (volId));
 
 			Irp->IoStatus.Status = STATUS_SUCCESS;
 			Irp->IoStatus.Information = outLength;
@@ -625,7 +631,35 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 			Irp->IoStatus.Information = sizeof (PARTITION_INFORMATION);
 		}
 		break;
-	
+		
+	case IOCTL_DISK_GET_DRIVE_LAYOUT:
+		if (irpSp->Parameters.DeviceIoControl.OutputBufferLength <
+		    sizeof (DRIVE_LAYOUT_INFORMATION))
+		{
+			Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
+			Irp->IoStatus.Information = 0;
+		}
+		else
+		{
+			PDRIVE_LAYOUT_INFORMATION outputBuffer = (PDRIVE_LAYOUT_INFORMATION)
+			Irp->AssociatedIrp.SystemBuffer;
+
+			outputBuffer->PartitionCount = 1;
+			outputBuffer->Signature = 0;
+
+			outputBuffer->PartitionEntry->PartitionType = Extension->PartitionType;
+			outputBuffer->PartitionEntry->BootIndicator = FALSE;
+			outputBuffer->PartitionEntry->RecognizedPartition = TRUE;
+			outputBuffer->PartitionEntry->RewritePartition = FALSE;
+			outputBuffer->PartitionEntry->StartingOffset = RtlConvertUlongToLargeInteger (0);
+			outputBuffer->PartitionEntry->PartitionLength.QuadPart= Extension->DiskLength;
+			outputBuffer->PartitionEntry->HiddenSectors = 1L;
+
+			Irp->IoStatus.Status = STATUS_SUCCESS;
+			Irp->IoStatus.Information = sizeof (PARTITION_INFORMATION);
+		}
+		break;
+
 	case IOCTL_DISK_GET_LENGTH_INFO:
 		if (irpSp->Parameters.DeviceIoControl.OutputBufferLength < sizeof (GET_LENGTH_INFORMATION))
 		{
@@ -657,6 +691,7 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 		break;
 
 	case IOCTL_DISK_CHECK_VERIFY:
+	case IOCTL_STORAGE_CHECK_VERIFY:
 		{
 			Irp->IoStatus.Status = STATUS_SUCCESS;
 			Irp->IoStatus.Information = 0;
@@ -665,7 +700,7 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 
 	case IOCTL_DISK_IS_WRITABLE:
 		{
-			if (Extension->bReadOnly == TRUE)
+			if (Extension->bReadOnly)
 				Irp->IoStatus.Status = STATUS_MEDIA_WRITE_PROTECTED;
 			else
 				Irp->IoStatus.Status = STATUS_SUCCESS;
@@ -677,7 +712,7 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 	// Private IOCTLs 
 
 	case DRIVER_VERSION:
-		if (irpSp->Parameters.DeviceIoControl.OutputBufferLength < 4)
+		if (irpSp->Parameters.DeviceIoControl.OutputBufferLength < sizeof (LONG))
 		{
 			Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
 			Irp->IoStatus.Information = 0;
@@ -686,18 +721,26 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 		{
 			LONG tmp = VERSION_NUM;
 			memcpy (Irp->AssociatedIrp.SystemBuffer, &tmp, 4);
-			Irp->IoStatus.Information = 4;
+			Irp->IoStatus.Information = sizeof (LONG);
 			Irp->IoStatus.Status = STATUS_SUCCESS;
 		}
 		break;
 
-	case OPEN_TEST:
-		if (irpSp->Parameters.DeviceIoControl.OutputBufferLength < sizeof (OPEN_TEST_STRUCT))
+	case DEVICE_REFCOUNT:
+		if (irpSp->Parameters.DeviceIoControl.OutputBufferLength < sizeof (int))
 		{
 			Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
 			Irp->IoStatus.Information = 0;
 		}
 		else
+		{
+			*(int *) Irp->AssociatedIrp.SystemBuffer = DeviceObject->ReferenceCount;
+			Irp->IoStatus.Information = sizeof (int);
+			Irp->IoStatus.Status = STATUS_SUCCESS;
+		}
+		break;
+
+	case OPEN_TEST:
 		{
 			OPEN_TEST_STRUCT *opentest = (OPEN_TEST_STRUCT *) Irp->AssociatedIrp.SystemBuffer;
 			OBJECT_ATTRIBUTES ObjectAttributes;
@@ -770,13 +813,22 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 			{
 
 				PEXTENSION ListExtension = (PEXTENSION) ListDevice->DeviceExtension;
-				if (ListExtension->bRootDevice == FALSE)
+				if (ListExtension->lMagicNumber == 0xabfeacde
+					&& ListExtension->bRootDevice == FALSE
+					&& !ListExtension->bShuttingDown)
 				{
 					list->ulMountedDrives |= (1 << ListExtension->nDosDriveNo);
 					wcscpy (list->wszVolume[ListExtension->nDosDriveNo], ListExtension->wszVolume);
 					list->diskLength[ListExtension->nDosDriveNo] = ListExtension->DiskLength;
 					list->ea[ListExtension->nDosDriveNo] = ListExtension->cryptoInfo->ea;
-					list->hiddenVol[ListExtension->nDosDriveNo] = ListExtension->cryptoInfo->hiddenVolume;
+					if (ListExtension->cryptoInfo->hiddenVolume)
+						list->volumeType[ListExtension->nDosDriveNo] = PROP_VOL_TYPE_HIDDEN;	// Hidden volume
+					else if (ListExtension->cryptoInfo->bHiddenVolProtectionAction)
+						list->volumeType[ListExtension->nDosDriveNo] = PROP_VOL_TYPE_OUTER_VOL_WRITE_PREVENTED;	// Normal/outer volume (hidden volume protected AND write already prevented)
+					else if (ListExtension->cryptoInfo->bProtectHiddenVolume)
+						list->volumeType[ListExtension->nDosDriveNo] = PROP_VOL_TYPE_OUTER;	// Normal/outer volume (hidden volume protected)
+					else
+						list->volumeType[ListExtension->nDosDriveNo] = PROP_VOL_TYPE_NORMAL;	// Normal volume
 				}
 			}
 
@@ -808,8 +860,11 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 			{
 
 				PEXTENSION ListExtension = (PEXTENSION) ListDevice->DeviceExtension;
-				if (ListExtension->bRootDevice == FALSE && ListExtension->nDosDriveNo == prop->driveNo)
+				if (ListExtension->bRootDevice == FALSE
+					&& !ListExtension->bShuttingDown
+					&& ListExtension->nDosDriveNo == prop->driveNo)
 				{
+					prop->uniqueId = ListExtension->UniqueVolumeId;
 					wcscpy (prop->wszVolume, ListExtension->wszVolume);
 					prop->diskLength = ListExtension->DiskLength;
 					prop->ea = ListExtension->cryptoInfo->ea;
@@ -817,7 +872,16 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 					prop->pkcs5Iterations = ListExtension->cryptoInfo->noIterations;
 					prop->volumeCreationTime = ListExtension->cryptoInfo->volume_creation_time;
 					prop->headerCreationTime = ListExtension->cryptoInfo->header_creation_time;
+					prop->readOnly = ListExtension->bReadOnly;
 					prop->hiddenVolume = ListExtension->cryptoInfo->hiddenVolume;
+
+					if (ListExtension->cryptoInfo->bProtectHiddenVolume)
+						prop->hiddenVolProtection = ListExtension->cryptoInfo->bHiddenVolProtectionAction ? HIDVOL_PROT_STATUS_ACTION_TAKEN : HIDVOL_PROT_STATUS_ACTIVE;
+					else
+						prop->hiddenVolProtection = HIDVOL_PROT_STATUS_NONE;
+
+					prop->totalBytesRead = ListExtension->TotalBytesRead;
+					prop->totalBytesWritten = ListExtension->TotalBytesWritten;
 
 					Irp->IoStatus.Status = STATUS_SUCCESS;
 					Irp->IoStatus.Information = sizeof (VOLUME_PROPERTIES_STRUCT);
@@ -830,7 +894,7 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 		break;
 
 	case RESOLVE_SYMLINK:
-		if (irpSp->Parameters.DeviceIoControl.OutputBufferLength < sizeof (MOUNT_STRUCT))
+		if (irpSp->Parameters.DeviceIoControl.OutputBufferLength < sizeof (RESOLVE_SYMLINK_STRUCT))
 		{
 			Irp->IoStatus.Status = STATUS_INVALID_PARAMETER;
 			Irp->IoStatus.Information = 0;
@@ -862,11 +926,14 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 		{
 			MOUNT_STRUCT *mount = (MOUNT_STRUCT *) Irp->AssociatedIrp.SystemBuffer;
 
-			Irp->IoStatus.Information = sizeof (MOUNT_STRUCT);
-
 			DriverMutexWait ();
+
+			Irp->IoStatus.Information = sizeof (MOUNT_STRUCT);
 			Irp->IoStatus.Status = MountDevice (DeviceObject, mount);
 			DriverMutexRelease ();
+
+			burn (&mount->VolumePassword, sizeof (mount->VolumePassword));
+			burn (&mount->ProtectedHidVolPassword, sizeof (mount->ProtectedHidVolPassword));
 		}
 		break;
 
@@ -890,6 +957,7 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 				PEXTENSION ListExtension = (PEXTENSION) ListDevice->DeviceExtension;
 
 				if (ListExtension->bRootDevice == FALSE
+					&& !ListExtension->bShuttingDown
 					&& unmount->nDosDriveNo == ListExtension->nDosDriveNo)
 				{
 					DriverMutexWait ();
@@ -929,12 +997,14 @@ TCDeviceControl (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, PIRP Irp)
 	return ntStatus;
 }
 
+
 NTSTATUS
 TCStartThread (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, MOUNT_STRUCT * mount)
 {
 	PTHREAD_BLOCK pThreadBlock = TCalloc (sizeof (THREAD_BLOCK));
 	HANDLE hThread;
 	NTSTATUS ntStatus;
+	HANDLE process;
 
 	Dump ("Starting thread...\n");
 
@@ -948,12 +1018,24 @@ TCStartThread (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, MOUNT_STRUCT *
 		pThreadBlock->mount = mount;
 	}
 
+	if (mount->bUserContext)
+	{
+		ntStatus = ObOpenObjectByPointer (IoGetCurrentProcess (), 0, NULL, 0, NULL, KernelMode, &process);
+		if (!NT_SUCCESS (ntStatus))
+		{
+			Dump ("ObOpenObjectByPointer Failed\n");
+			goto ret;
+		}
+	}
+	else
+		process = NULL;
+
 	Extension->bThreadShouldQuit = FALSE;
 
 	ntStatus = PsCreateSystemThread (&hThread,
 					 THREAD_ALL_ACCESS,
 					 NULL,
-					 NULL,
+					 process,
 					 NULL,
 					 TCThreadIRP,
 					 pThreadBlock);
@@ -961,8 +1043,7 @@ TCStartThread (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, MOUNT_STRUCT *
 	if (!NT_SUCCESS (ntStatus))
 	{
 		Dump ("PsCreateSystemThread Failed END\n");
-		TCfree (pThreadBlock);
-		return ntStatus;
+		goto ret;
 	}
 
 	ObReferenceObjectByHandle (hThread,
@@ -983,6 +1064,8 @@ TCStartThread (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension, MOUNT_STRUCT *
 
 	Dump ("Waiting completed! Thread returns 0x%08x\n", pThreadBlock->ntCreateStatus);
 	ntStatus = pThreadBlock->ntCreateStatus;
+
+ret:
 	TCfree (pThreadBlock);
 	return ntStatus;
 }
@@ -1012,7 +1095,7 @@ TCStopThread (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension)
 		Dump ("Failed waiting for crypto thread to quit: 0x%08x...\n",
 		      ntStatus);
 
-	ObDereferenceObject (&Extension->peThread);
+	ObDereferenceObject (Extension->peThread);
 	Extension->peThread = NULL;
 
 	Dump ("Thread exited!\n");
@@ -1042,7 +1125,6 @@ TCThreadIRP (PVOID Context)
 {
 	PTHREAD_BLOCK pThreadBlock = (PTHREAD_BLOCK) Context;
 	PDEVICE_OBJECT DeviceObject = pThreadBlock->DeviceObject;
-	PDRIVER_OBJECT DriverObject = DeviceObject->DriverObject;
 	PEXTENSION Extension = (PEXTENSION) DeviceObject->DeviceExtension;
 	LARGE_INTEGER queueWait;
 	BOOL bDevice;
@@ -1160,7 +1242,7 @@ TCThreadIRP (PVOID Context)
 						TCDeviceControl (DeviceObject, Extension, Irp);
 					else
 					{
-						if (Extension->bRawDevice == TRUE)
+						if (Extension->bRawDevice)
 							TCSendIRP_RawDevice (DeviceObject, Extension, NULL, 0, IRP_MJ_DEVICE_CONTROL, Irp);
 						else
 							TCDeviceControl (DeviceObject, Extension, Irp);
@@ -1366,7 +1448,7 @@ TCDeleteDeviceObject (PDEVICE_OBJECT DeviceObject, PEXTENSION Extension)
 
 	Dump ("TCDeleteDeviceObject BEGIN\n");
 
-	if (Extension->bRootDevice == TRUE)
+	if (Extension->bRootDevice)
 	{
 		RtlInitUnicodeString (&Win32NameString, (LPWSTR) DOS_ROOT_PREFIX);
 		ntStatus = IoDeleteSymbolicLink (&Win32NameString);
@@ -1559,6 +1641,41 @@ TCFsctlCall (PFILE_OBJECT fileObject, LONG IoControlCode,
 
 
 NTSTATUS
+CreateDriveLink (int nDosDriveNo)
+{
+	WCHAR dev[64], link[64];
+	UNICODE_STRING deviceName, symLink;
+	NTSTATUS ntStatus;
+
+	TCGetNTNameFromNumber (dev, nDosDriveNo);
+	TCGetDosNameFromNumber (link, nDosDriveNo);
+
+	RtlInitUnicodeString (&deviceName, dev);
+	RtlInitUnicodeString (&symLink, link);
+
+	ntStatus = IoCreateSymbolicLink (&symLink, &deviceName);
+	Dump ("IoCreateSymbolicLink returned %X\n", ntStatus);
+	return ntStatus;
+}
+
+
+NTSTATUS
+RemoveDriveLink (int nDosDriveNo)
+{
+	WCHAR link[64];
+	UNICODE_STRING symLink;
+	NTSTATUS ntStatus;
+
+	TCGetDosNameFromNumber (link, nDosDriveNo);
+	RtlInitUnicodeString (&symLink, link);
+
+	ntStatus = IoDeleteSymbolicLink (&symLink);
+	Dump ("IoDeleteSymbolicLink returned %X\n", ntStatus);
+	return ntStatus;
+}
+
+
+NTSTATUS
 MountManagerMount (MOUNT_STRUCT *mount)
 {
 	NTSTATUS ntStatus; 
@@ -1600,7 +1717,6 @@ NTSTATUS
 MountManagerUnmount (int nDosDriveNo)
 {
 	NTSTATUS ntStatus; 
-	WCHAR drive[] = {(WCHAR) nDosDriveNo + 'A', 0};
 	char buf[64], out[300];
 	PMOUNTMGR_MOUNT_POINT in = (PMOUNTMGR_MOUNT_POINT) buf;
 
@@ -1626,7 +1742,7 @@ MountDevice (PDEVICE_OBJECT DeviceObject, MOUNT_STRUCT *mount)
 	PDEVICE_OBJECT NewDeviceObject;
 	NTSTATUS ntStatus;
 
-	/* Make sure the user is asking for a resonable
+	/* Make sure the user is asking for a reasonable 
 	nDosDriveNo */
 	if (mount->nDosDriveNo >= 0 && mount->nDosDriveNo <= 25)
 	{
@@ -1635,7 +1751,14 @@ MountDevice (PDEVICE_OBJECT DeviceObject, MOUNT_STRUCT *mount)
 	else
 	{
 		Dump ("WARNING: MOUNT DRIVE LETTER INVALID\n");
+		mount->nReturnCode = ERR_BAD_DRIVE_LETTER;
 		return ERR_BAD_DRIVE_LETTER;
+	}
+
+	if (!SelfTestsPassed)
+	{
+		mount->nReturnCode = ERR_SELF_TESTS_FAILED;
+		return ERR_SELF_TESTS_FAILED;
 	}
 
 	ntStatus = TCCreateDeviceObject (DeviceObject->DriverObject, &NewDeviceObject,
@@ -1661,30 +1784,20 @@ MountDevice (PDEVICE_OBJECT DeviceObject, MOUNT_STRUCT *mount)
 			{
 				Dump ("Mount SUCCESS TC code = 0x%08x READ-ONLY = %d\n", mount->nReturnCode,
 					NewExtension->bReadOnly);
-				if (NewExtension->bReadOnly == TRUE)
+				if (NewExtension->bReadOnly)
 					NewDeviceObject->Characteristics |= FILE_READ_ONLY_DEVICE;
 				NewDeviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
 
+				NewExtension->UniqueVolumeId = LastUniqueVolumeId++;
+
 				if (mount->bMountManager)
-				{
 					MountManagerMount (mount);
-					NewExtension->bMountManager = TRUE;
-				}
-				else
-				{
-					WCHAR dev[64], link[64];
-					UNICODE_STRING deviceName, symLink;
 
-					TCGetNTNameFromNumber (dev, mount->nDosDriveNo);
-					TCGetDosNameFromNumber (link, mount->nDosDriveNo);
+				NewExtension->bMountManager = mount->bMountManager;
 
-					RtlInitUnicodeString (&deviceName, dev);
-					RtlInitUnicodeString (&symLink, link);
-
-					ntStatus = IoCreateSymbolicLink (&symLink, &deviceName);
-					Dump ("IoCreateSymbolicLink returned %X\n", ntStatus);
-					NewExtension->bMountManager = FALSE;
-				}
+				// We create symbolic link even if mount manager is notified of
+				// arriving volume as it apparently sometimes fails to create the link
+				CreateDriveLink (mount->nDosDriveNo);
 			}
 			else
 			{
@@ -1706,10 +1819,18 @@ UnmountDevice (PDEVICE_OBJECT deviceObject, BOOL ignoreOpenFiles)
 	PFILE_OBJECT volumeFileObject;
 
 	ntStatus = TCOpenFsVolume (extension, &volumeHandle, &volumeFileObject);
-
 	if (!NT_SUCCESS (ntStatus))
-		return ERR_DRIVE_NOT_FOUND;
+	{
+		// User may have deleted symbolic link
+		CreateDriveLink (extension->nDosDriveNo);
 
+		ntStatus = TCOpenFsVolume (extension, &volumeHandle, &volumeFileObject);
+
+		if (!NT_SUCCESS (ntStatus))
+			return ntStatus;
+	}
+
+	// Lock volume
 	ntStatus = TCFsctlCall (volumeFileObject, FSCTL_LOCK_VOLUME, 0, 0, 0, 0);
 	Dump ("FSCTL_LOCK_VOLUME returned %X\n", ntStatus);
 
@@ -1719,6 +1840,7 @@ UnmountDevice (PDEVICE_OBJECT deviceObject, BOOL ignoreOpenFiles)
 		return ERR_FILES_OPEN;
 	}
 
+	// Dismount volume
 	ntStatus = TCFsctlCall (volumeFileObject, FSCTL_DISMOUNT_VOLUME, 0, 0, 0, 0);
 	Dump ("FSCTL_DISMOUNT_VOLUME returned %X\n", ntStatus);
 
@@ -1728,28 +1850,17 @@ UnmountDevice (PDEVICE_OBJECT deviceObject, BOOL ignoreOpenFiles)
 		deviceObject->Flags |= DO_VERIFY_VOLUME;
 	}
 
-	TCCloseFsVolume (volumeHandle, volumeFileObject);
-
 	if (extension->bMountManager)
-	{
 		MountManagerUnmount (extension->nDosDriveNo);
-	}
-	else
-	{
-		WCHAR link[64];
-		UNICODE_STRING symLink;
+	
+	// We always remove symbolic link as mount manager might fail to do so
+	RemoveDriveLink (extension->nDosDriveNo);
 
-		TCGetDosNameFromNumber (link, extension->nDosDriveNo);
-		RtlInitUnicodeString (&symLink, link);
-
-		ntStatus = IoDeleteSymbolicLink (&symLink);
-		Dump ("IoDeleteSymbolicLink returned %X\n", ntStatus);
-	}
+	TCCloseFsVolume (volumeHandle, volumeFileObject);
 
 	Dump ("Deleting DeviceObject with ref count %ld\n", deviceObject->ReferenceCount);
 	deviceObject->ReferenceCount = 0;
 	TCDeleteDeviceObject (deviceObject, (PEXTENSION) deviceObject->DeviceExtension);
-
 	return 0;
 }
 
@@ -1768,7 +1879,7 @@ UnmountAllDevices (PDEVICE_OBJECT DeviceObject, BOOL ignoreOpenFiles)
 		ListDevice = ListDevice->NextDevice)
 	{
 		PEXTENSION ListExtension = (PEXTENSION) ListDevice->DeviceExtension;
-		if (ListExtension->bRootDevice == FALSE)
+		if (ListExtension->bRootDevice == FALSE && !ListExtension->bShuttingDown)
 		{
 			NTSTATUS ntStatus = UnmountDevice (ListDevice, ignoreOpenFiles);
 			status = ntStatus == 0 ? status : ntStatus;
@@ -1808,4 +1919,10 @@ SymbolicLinkToTarget (PWSTR symlinkName, PWSTR targetName, USHORT maxTargetNameL
 	}
 
 	return ntStatus;
+}
+
+// Checks if two regions overlap (borders are parts of regions)
+BOOL RegionsOverlap (unsigned __int64 start1, unsigned __int64 end1, unsigned __int64 start2, unsigned __int64 end2)
+{
+	return (start1 < start2) ? (end1 >= start2) : (start1 <= end2);
 }
